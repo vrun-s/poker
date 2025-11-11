@@ -5,6 +5,8 @@ from pydantic import BaseModel
 from uuid import uuid4
 from concurrent.futures import ProcessPoolExecutor
 import asyncio
+from poker_engine.heuristic_ai import HeuristicAI
+from fastapi import Body
 
 # Import your engine
 from poker_engine.poker_engine_api import PokerGame
@@ -39,12 +41,21 @@ class ActionRequest(BaseModel):
 
 @app.post("/create_game")
 async def create_game(req: CreateGameRequest):
-    """Create a new poker game session"""
-    if len(req.player_names) < 2:
-        raise HTTPException(status_code=400, detail="Need at least 2 players")
+    """Create a new poker game session with 1 AI opponent."""
+    if len(req.player_names) < 1:
+        raise HTTPException(status_code=400, detail="Need at least one human player")
 
     game_id = str(uuid4())[:8]
-    game = PokerGame(req.player_names)
+
+    # Add a bot player automatically
+    all_players = req.player_names + ["Bot"]
+    game = PokerGame(all_players)
+
+    # Mark bot flag
+    for p in game.players:
+        if p.name == "Bot":
+            p.is_bot = True
+
     games[game_id] = game
     locks[game_id] = asyncio.Lock()
     return {"game_id": game_id, "state": game.get_game_state()}
@@ -63,17 +74,42 @@ async def start_hand(game_id: str):
 
 
 @app.post("/action/{game_id}")
-async def player_action(game_id: str, req: ActionRequest):
-    """Execute a player's action (call, fold, check, raise)"""
+async def player_action(game_id: str, data: dict = Body(...)):
+    """Execute a player's action, and trigger AI moves if it's the bot's turn."""
     game = games.get(game_id)
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
 
     async with locks[game_id]:
-        result = game.execute_action(req.player_index, req.action, req.raise_amount)
-        state = game.get_game_state()
-        return {"result": result, "state": state}
+        player_index = data["player_index"]
+        action = data["action"]
+        raise_amount = data.get("raise_amount", 0)
 
+        # Apply human action
+        result = game.execute_action(player_index, action, raise_amount)
+        state = game.get_game_state()
+
+        # --- Handle AI turn automatically ---
+        while (
+            not game.game_over
+            and game.current_player_index is not None
+            and getattr(game.players[game.current_player_index], "is_bot", False)
+        ):
+            ai_state = game.get_game_state()
+            loop = asyncio.get_event_loop()
+
+            ai_player = HeuristicAI(name=game.players[game.current_player_index].name, difficulty="medium")
+
+            ai_decision = await loop.run_in_executor(executor, ai_player.decide, ai_state)
+            move = ai_decision["move"]
+            amt = ai_decision.get("raise_amount", 0)
+
+            print(f"[AI] {ai_player.name} ({ai_player.difficulty}) chooses {move} {amt if amt else ''}")
+            game.execute_action(game.current_player_index, move, amt)
+            state = game.get_game_state()
+
+
+        return {"result": result, "state": state}
 
 @app.get("/state/{game_id}")
 async def get_state(game_id: str):
