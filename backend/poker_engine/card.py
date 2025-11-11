@@ -23,10 +23,3 @@ class Deck:
         dealt_cards = self.cards[:n]
         self.cards = self.cards[n:]
         return dealt_cards
-
-
-
-'''
-d = Deck()
-print(d.deal(2))
-'''
