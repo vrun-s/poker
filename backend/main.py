@@ -1,11 +1,13 @@
 # main.py
+#from poker_engine.heuristic_ai import HeuristicAI
+#from poker_engine.simple_ai import SimpleAI
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from uuid import uuid4
 from concurrent.futures import ProcessPoolExecutor
 import asyncio
-from poker_engine.heuristic_ai import HeuristicAI
+from poker_engine.monte_carlo_ai import MonteCarloAI
 from fastapi import Body
 
 # Import your engine
@@ -16,7 +18,7 @@ app = FastAPI(title="Poker Game API")
 # Allow requests from your React/Next.js frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # change this to your frontend URL in production
+    allow_origins=["*"],  
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -75,7 +77,7 @@ async def start_hand(game_id: str):
 
 @app.post("/action/{game_id}")
 async def player_action(game_id: str, data: dict = Body(...)):
-    """Execute a player's action, and trigger AI moves if it's the bot's turn."""
+    """Execute a player's action and trigger AI responses."""
     game = games.get(game_id)
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
@@ -85,31 +87,43 @@ async def player_action(game_id: str, data: dict = Body(...)):
         action = data["action"]
         raise_amount = data.get("raise_amount", 0)
 
-        # Apply human action
-        result = game.execute_action(player_index, action, raise_amount)
-        state = game.get_game_state()
+        messages = []  # Collect all action messages
 
-        # --- Handle AI turn automatically ---
+        # --- Human player action ---
+        result = game.execute_action(player_index, action, raise_amount)
+        if "message" in result:
+            messages.append(result["message"])
+
+        # --- AI auto-turn(s) ---
         while (
             not game.game_over
             and game.current_player_index is not None
             and getattr(game.players[game.current_player_index], "is_bot", False)
         ):
-            ai_state = game.get_game_state()
+            ai_state = game.get_game_state(viewer_name=game.players[game.current_player_index].name)
             loop = asyncio.get_event_loop()
+            ai_player = MonteCarloAI(
+                name=game.players[game.current_player_index].name,
+                simulations=200
+            )
 
-            ai_player = HeuristicAI(name=game.players[game.current_player_index].name, difficulty="medium")
+            try:
+                ai_decision = await loop.run_in_executor(executor, ai_player.decide, ai_state)
+                move = ai_decision.get("move", "check")
+                amt = ai_decision.get("raise_amount", 0)
 
-            ai_decision = await loop.run_in_executor(executor, ai_player.decide, ai_state)
-            move = ai_decision["move"]
-            amt = ai_decision.get("raise_amount", 0)
+                ai_result = game.execute_action(game.current_player_index, move, amt)
+                if "message" in ai_result:
+                    messages.append(ai_result["message"])
 
-            print(f"[AI] {ai_player.name} ({ai_player.difficulty}) chooses {move} {amt if amt else ''}")
-            game.execute_action(game.current_player_index, move, amt)
-            state = game.get_game_state()
+                print(f"[AI] {ai_player.name} -> {move} {amt if amt else ''}")
 
+            except Exception as e:
+                print(f"[AI ERROR] {ai_player.name}: {e}")
+                break
 
-        return {"result": result, "state": state}
+        state = game.get_game_state()
+        return {"messages": messages, "state": state}
 
 @app.get("/state/{game_id}")
 async def get_state(game_id: str):

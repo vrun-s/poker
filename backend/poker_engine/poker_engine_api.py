@@ -278,16 +278,33 @@ class PokerGame:
                 self.game_over = True
                 break
 
-    def get_game_state(self):
-        """API addition: Return complete game state as dict"""
+    def get_game_state(self, viewer_name=None):
         current_player = None
         to_call = 0
-        
+
         if self.current_player_index is not None:
             current_player = self.players[self.current_player_index].name
             p = self.players[self.current_player_index]
             to_call = max(0, self.current_bet - p.current_bet)
-        
+
+        players_state = []
+        for p in self.players:
+            hand = []
+            if viewer_name is None or p.name == viewer_name:
+                hand = [str(c) for c in p.hand]  # show full hand
+            elif not p.folded:
+                hand = ["??", "??"]  # hide opponents’ cards
+            else:
+                hand = []  # folded players have no visible cards
+
+            players_state.append({
+                "name": p.name,
+                "chips": p.chips,
+                "hand": hand,
+                "current_bet": p.current_bet,
+                "folded": p.folded
+            })
+
         return {
             "stage": self.stage,
             "pot": self.pot,
@@ -300,13 +317,5 @@ class PokerGame:
             "game_over": self.game_over,
             "winner": self.winner.name if self.winner else None,
             "dealer": self.players[self.dealer_index].name,
-            "players": [
-                {
-                    "name": p.name,
-                    "chips": p.chips,
-                    "hand": [str(c) for c in p.hand],
-                    "current_bet": p.current_bet,
-                    "folded": p.folded
-                } for p in self.players
-            ]
+            "players": players_state
         }
