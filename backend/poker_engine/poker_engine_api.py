@@ -12,7 +12,7 @@ class PokerGame:
         self.small_blind = 10
         self.big_blind = 20
         self.current_bet = 0
-        self.stage = "preflop"
+        self.stage = "lobby"  # Changed from "preflop" to "lobby"
         
         # API additions: track current player and game state
         self.current_player_index = None
@@ -21,6 +21,10 @@ class PokerGame:
         self.players_to_act = set()
         self.player_order = []
         self.action_index = 0
+        
+        # Lobby state
+        self.lobby_timer = 15
+        self.game_starting = False
 
     def rotate_dealer(self):
         self.dealer_index = (self.dealer_index + 1) % len(self.players)
@@ -50,50 +54,75 @@ class PokerGame:
 
     def setup_betting_round(self):
         """API addition: Initialize betting round and set current player"""
+        print(f"DEBUG: Setting up betting round for stage: {self.stage}")
+        
         if self.stage == "preflop":
-            if len(self.players) == 2:
-                start_pos = self.dealer_index
+            if len([p for p in self.players if p.name]) == 2:  # Only count active players
+                start_pos = (self.dealer_index + 1) % len(self.players)
             else:
                 start_pos = (self.dealer_index + 3) % len(self.players)
         else:
             start_pos = (self.dealer_index + 1) % len(self.players)
-
-        self.players_to_act = set(range(len(self.players)))
-
+    
+        # Only include players who are actually playing (have names and chips)
+        self.players_to_act = set()
+        for i, p in enumerate(self.players):
+            if p.name and p.name != "" and p.chips > 0 and not p.folded:
+                self.players_to_act.add(i)
+    
         self.player_order = []
         for i in range(len(self.players)):
-            self.player_order.append((start_pos + i) % len(self.players))
-
+            idx = (start_pos + i) % len(self.players)
+            if self.players[idx].name and self.players[idx].name != "" and self.players[idx].chips > 0:
+                self.player_order.append(idx)
+    
         self.action_index = 0
+        print(f"DEBUG: Players to act: {self.players_to_act}, Player order: {self.player_order}")
         self.advance_to_next_player()
 
+
     def advance_to_next_player(self):
-        """API addition: Find next player who needs to act"""
-        while len(self.players_to_act) > 0:
+        print(f"DEBUG: Advancing to next player. Players to act: {self.players_to_act}")
+
+        # If no players to act, advance stage
+        if not self.players_to_act:
+            print("DEBUG: No players to act, advancing stage")
+            self.advance_stage()
+            return
+
+        # Find next player who can act
+        attempts = 0
+        while attempts < len(self.player_order) * 2:  # Safety limit
             if self.action_index >= len(self.player_order):
                 self.action_index = 0
 
             p_idx = self.player_order[self.action_index]
             p = self.players[p_idx]
 
+            print(f"DEBUG: Checking player {p_idx} ({p.name}), in players_to_act: {p_idx in self.players_to_act}, folded: {p.folded}, chips: {p.chips}")
+
             if p_idx not in self.players_to_act:
                 self.action_index += 1
+                attempts += 1
                 continue
-            
             if p.folded:
                 self.players_to_act.discard(p_idx)
                 self.action_index += 1
+                attempts += 1
                 continue
-
             if p.chips <= 0:
                 self.players_to_act.discard(p_idx)
                 self.action_index += 1
+                attempts += 1
                 continue
             
+            # Found a player who can act
             self.current_player_index = p_idx
-            return
-        
-        # Betting round complete
+            print(f"DEBUG: Set current player to {p_idx} ({p.name})")
+            return  # This return should be the last statement in the method
+
+        # If we get here, no valid player found
+        print("DEBUG: No valid player found, advancing stage")
         self.current_player_index = None
         self.advance_stage()
 
@@ -129,6 +158,10 @@ class PokerGame:
 
     def get_legal_actions(self):
         """API addition: Return legal actions for current player"""
+        # No legal actions during lobby phase
+        if self.stage == "lobby":
+            return []
+            
         if self.current_player_index is None or self.game_over:
             return []
         
@@ -150,6 +183,10 @@ class PokerGame:
 
     def execute_action(self, player_index, action, raise_amount=0):
         """API addition: Execute action without input(), return result"""
+        # Don't allow actions during lobby phase
+        if self.stage == "lobby":
+            return {"error": "Game is in lobby phase - cannot perform actions"}
+            
         if self.game_over:
             return {"error": "Game is over"}
         
@@ -253,6 +290,11 @@ class PokerGame:
 
     def play_hand(self):
         """Start a new hand - for API, call this to initialize"""
+        # Reset lobby state and start the actual game
+        self.stage = "preflop"
+        self.lobby_timer = None
+        self.game_starting = False
+        
         self.deck = Deck()
         self.community_cards = []
         self.pot = 0
@@ -265,8 +307,6 @@ class PokerGame:
         
         self.post_blinds()
         self.deal_hole_cards()
-
-        self.stage = "preflop"
         self.setup_betting_round()
 
     def award_pot_to_remaining_player(self):
@@ -278,6 +318,97 @@ class PokerGame:
                 self.game_over = True
                 break
 
+    def get_active_player_count(self):
+        """Count how many players are actively seated (non-empty names)"""
+        return sum(1 for p in self.players if p.name and p.name != "")
+
+    def join_seat(self, seat_index, player_name):
+        """Join a seat during lobby phase"""
+        if self.stage != "lobby":
+            return False, "Can only join seats during lobby phase"
+            
+        if seat_index < 0 or seat_index >= len(self.players):
+            return False, "Invalid seat index"
+            
+        existing_player = self.players[seat_index]
+        if existing_player.name and existing_player.name != "":
+            return False, "Seat already taken"
+            
+        # Set player properties
+        existing_player.name = player_name
+        existing_player.is_bot = False
+        existing_player.folded = False
+        existing_player.current_bet = 0
+        
+        # Give default buy-in if chips are 0
+        if existing_player.chips <= 0:
+            existing_player.chips = 1000
+            
+        # Reset hand
+        existing_player.hand = []
+        
+        return True, "Seat joined successfully"
+
+    def leave_seat(self, seat_index):
+        """Leave a seat during lobby phase"""
+        if self.stage != "lobby":
+            return False, "Can only leave seats during lobby phase"
+            
+        if seat_index < 0 or seat_index >= len(self.players):
+            return False, "Invalid seat index"
+            
+        player = self.players[seat_index]
+        if not player.name or player.name == "":
+            return False, "Seat is already empty"
+            
+        player_name = player.name
+        
+        # Clear the seat but preserve chips for potential rejoin
+        player.name = ""
+        player.is_bot = False
+        player.folded = False
+        player.current_bet = 0
+        player.hand = []
+        # Note: We keep the chips so player can rejoin with same stack
+        
+        return True, f"{player_name} left seat {seat_index + 1}"
+
+    # In your PokerGame class in poker_engine_api.py
+
+    def get_legal_actions(self):
+        """API addition: Return legal actions for current player"""
+        # No legal actions during lobby phase
+        if self.stage == "lobby":
+            print("DEBUG: In lobby phase - no legal actions")
+            return []
+
+        if self.current_player_index is None:
+            print("DEBUG: No current player - no legal actions")
+            return []
+
+        if self.game_over:
+            print("DEBUG: Game over - no legal actions")
+            return []
+
+        p = self.players[self.current_player_index]
+        to_call = max(0, self.current_bet - p.current_bet)
+
+        print(f"DEBUG: Player {p.name}, to_call: {to_call}, chips: {p.chips}, current_bet: {p.current_bet}, game_bet: {self.current_bet}")
+
+        actions = []
+        if to_call == 0:
+            actions.append("check")
+        else:
+            actions.append("call")
+
+        actions.append("fold")
+
+        if to_call < p.chips:
+            actions.append("raise")
+
+        print(f"DEBUG: Legal actions for {p.name}: {actions}")
+        return actions
+    
     def get_game_state(self, viewer_name=None):
         current_player = None
         to_call = 0
@@ -290,12 +421,17 @@ class PokerGame:
         players_state = []
         for p in self.players:
             hand = []
-            if viewer_name is None or p.name == viewer_name:
-                hand = [str(c) for c in p.hand]  # show full hand
-            elif not p.folded:
-                hand = ["??", "??"]  # hide opponents’ cards
+            # Only show cards if game is active and not in lobby
+            if self.stage != "lobby":
+                if viewer_name is None or p.name == viewer_name:
+                    hand = [str(c) for c in p.hand]  # show full hand
+                elif not p.folded:
+                    hand = ["??", "??"]  # hide opponents' cards
+                else:
+                    hand = []  # folded players have no visible cards
             else:
-                hand = []  # folded players have no visible cards
+                # In lobby phase, don't show any cards
+                hand = []
 
             players_state.append({
                 "name": p.name,
@@ -317,5 +453,8 @@ class PokerGame:
             "game_over": self.game_over,
             "winner": self.winner.name if self.winner else None,
             "dealer": self.players[self.dealer_index].name,
-            "players": players_state
+            "players": players_state,
+            # Lobby state additions
+            "lobby_timer": getattr(self, 'lobby_timer', None),
+            "game_starting": getattr(self, 'game_starting', False)
         }
