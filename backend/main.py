@@ -10,9 +10,12 @@ import asyncio
 from poker_engine.monte_carlo_ai import MonteCarloAI
 from fastapi import Body
 import random
-
-# Import your engine
 from poker_engine.poker_engine_api import PokerGame
+from ws_manager import ConnectionManager
+from fastapi import WebSocket, WebSocketDisconnect
+
+manager = ConnectionManager()
+
 
 app = FastAPI(title="Poker Game API")
 
@@ -73,6 +76,11 @@ async def start_hand(game_id: str):
 
     async with locks[game_id]:
         game.play_hand()
+        await manager.broadcast(game_id, {
+            "type": "state_update",
+            "state": game.get_game_state()
+        })
+
         return {"message": "New hand started", "state": game.get_game_state()}
 
 
@@ -91,6 +99,12 @@ async def player_action(game_id: str, data: dict = Body(...)):
         # Apply human action
         result = game.execute_action(player_index, action, raise_amount)
         state = game.get_game_state()
+
+        await manager.broadcast(game_id, {
+            "type": "state_update",
+            "state": game.get_game_state()
+        })
+
 
         # Log messages from human player
         messages = [f"{game.players[player_index].name} chose {action} {raise_amount if raise_amount else ''}".strip()]
@@ -123,6 +137,12 @@ async def player_action(game_id: str, data: dict = Body(...)):
             game.execute_action(game.current_player_index, move, amt)
             state = game.get_game_state()
 
+            await manager.broadcast(game_id, {
+                "type": "state_update",
+                "state": state
+            })
+
+
         return {"result": result, "state": state, "messages": messages}
 
 @app.get("/state/{game_id}")
@@ -133,3 +153,26 @@ async def get_state(game_id: str):
         raise HTTPException(status_code=404, detail="Game not found")
 
     return {"state": game.get_game_state()}
+
+@app.websocket("/ws/{game_id}/{player_name}")
+async def websocket_endpoint(websocket: WebSocket, game_id: str, player_name: str):
+    # Player joins the game room
+    await manager.connect(game_id, websocket)
+
+    # Immediately send the current state
+    game = games.get(game_id)
+    if game:
+        await manager.broadcast(game_id, {
+            "type": "state_update",
+            "state": game.get_game_state(viewer_name=player_name)
+        })
+
+    try:
+        while True:
+            # For now we don't expect messages from client
+            # But you can later handle: WS actions, chat messages, etc.
+            await websocket.receive_text()
+
+    except WebSocketDisconnect:
+        manager.disconnect(game_id, websocket)
+

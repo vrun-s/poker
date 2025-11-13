@@ -26,6 +26,7 @@ type GameState = {
   players: Player[];
 };
 
+// Smooth number animation hook
 function useAnimatedNumber(value: number, duration = 0.4) {
   const [display, setDisplay] = useState(value);
 
@@ -49,17 +50,18 @@ function useAnimatedNumber(value: number, duration = 0.4) {
 
 
 export default function Page() {
+  // ------------------- STATE -------------------
   const [gameId, setGameId] = useState<string | null>(null);
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [playerNames, setPlayerNames] = useState("Alice,Bob");
   const [raiseAmount, setRaiseAmount] = useState(20);
   const [loading, setLoading] = useState(false);
-  const [lastAction, setLastAction] = useState<string>("");
+  const [lastAction, setLastAction] = useState("");
   const [actionLog, setActionLog] = useState<string[]>([]);
 
   const apiBase = "http://localhost:8000";
-  
 
+  // ------------------- CREATE GAME -------------------
   async function createGame() {
     setLoading(true);
     const res = await fetch(`${apiBase}/create_game`, {
@@ -67,49 +69,77 @@ export default function Page() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ player_names: playerNames.split(",") }),
     });
+
     const data = await res.json();
     setGameId(data.game_id);
     setGameState(data.state);
     setLoading(false);
   }
 
+  // ------------------- WEBSOCKET SETUP -------------------
+  useEffect(() => {
+    if (!gameId) return;
+
+    const viewerName = playerNames.split(",")[0];
+    const ws = new WebSocket(`ws://localhost:8000/ws/${gameId}/${viewerName}`);
+
+    ws.onopen = () => console.log("WS Connected");
+
+    ws.onmessage = (event) => {
+      const message = JSON.parse(event.data);
+      if (message.type === "state_update") {
+        setGameState(message.state); // real-time update
+      }
+    };
+
+    ws.onclose = () => console.log("WS Disconnected");
+
+    return () => ws.close();
+  }, [gameId, playerNames]);
+
+  // ------------------- START HAND -------------------
   async function startHand() {
     if (!gameId) return;
+
     setLoading(true);
-    const res = await fetch(`${apiBase}/start_hand/${gameId}`, { method: "POST" });
-    const data = await res.json();
-    setGameState(data.state);
+    await fetch(`${apiBase}/start_hand/${gameId}`, { method: "POST" });
+
+    // WebSocket will update state automatically
     setLastAction("");
     setActionLog([]);
     setLoading(false);
   }
 
+  // ------------------- ACTION (CHECK/CALL/RAISE/FOLD) -------------------
   async function doAction(action: string) {
     if (!gameId || !gameState) return;
-    const currentIndex = gameState.current_player_index;
+
     setLoading(true);
+
     const res = await fetch(`${apiBase}/action/${gameId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        player_index: currentIndex,
+        player_index: gameState.current_player_index,
         action,
         raise_amount: raiseAmount,
       }),
     });
+
     const data = await res.json();
-    setGameState(data.state);
     setLoading(false);
 
+    // action messages only, state comes via WebSocket
     if (data.messages?.length) {
-      const joined = data.messages.join(" → ");
-      setLastAction(joined);
       setActionLog((prev) => [...prev, ...data.messages]);
+      setLastAction(data.messages.join(" → "));
     }
   }
 
+  // ------------------- ANIMATED POT -------------------
   const animatedPot = useAnimatedNumber(gameState?.pot || 0);
 
+  // ------------------- UI -------------------
   return (
     <main className="p-6 flex flex-col gap-6 text-white bg-linear-to-b from-gray-900 to-gray-800 min-h-screen">
       <motion.h1
@@ -121,6 +151,7 @@ export default function Page() {
       </motion.h1>
 
       {!gameId ? (
+        // ------------------- CREATE GAME UI -------------------
         <div className="flex flex-col items-center gap-3">
           <input
             className="p-2 text-black rounded"
@@ -139,8 +170,10 @@ export default function Page() {
           </motion.button>
         </div>
       ) : (
+        // ------------------- GAME UI -------------------
         <div className="flex flex-col items-center gap-4">
           <h2 className="text-lg">Game ID: {gameId}</h2>
+
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
@@ -156,6 +189,7 @@ export default function Page() {
               layout
               className="w-full max-w-3xl bg-gray-800/80 p-4 rounded-lg shadow-xl backdrop-blur"
             >
+              {/* ------------------- TOP INFO ------------------- */}
               <div className="mb-4 text-center">
                 <p>Stage: {gameState.stage}</p>
                 <p className="text-lg">Pot: 💰 {animatedPot}</p>
@@ -168,7 +202,7 @@ export default function Page() {
                 )}
               </div>
 
-              {/* 🃏 Community Cards Animation */}
+              {/* ------------------- COMMUNITY CARDS ------------------- */}
               <div className="mb-6">
                 <h3 className="font-semibold text-center mb-2">Community Cards</h3>
                 <div className="flex gap-3 justify-center">
@@ -197,7 +231,7 @@ export default function Page() {
                 </div>
               </div>
 
-              {/* 👥 Players */}
+              {/* ------------------- PLAYERS ------------------- */}
               <div className="mb-4">
                 <h3 className="font-semibold mb-3 text-center">Players</h3>
                 <div className="flex flex-col gap-3">
@@ -206,22 +240,20 @@ export default function Page() {
                       key={i}
                       layout
                       animate={{
-                        scale:
-                          i === gameState.current_player_index ? 1.05 : 1,
+                        scale: i === gameState.current_player_index ? 1.05 : 1,
                         borderColor:
                           i === gameState.current_player_index
                             ? "#facc15"
                             : "#4b5563",
                       }}
                       transition={{ type: "spring", stiffness: 100 }}
-                      className={`p-3 rounded-xl border bg-gray-900/70 shadow-md`}
+                      className="p-3 rounded-xl border bg-gray-900/70 shadow-md"
                     >
                       <p className="font-semibold">
                         {p.name} — 💵 {p.chips}{" "}
-                        {p.folded && (
-                          <span className="text-red-400">(Folded)</span>
-                        )}
+                        {p.folded && <span className="text-red-400">(Folded)</span>}
                       </p>
+
                       <p className="text-sm">Current Bet: {p.current_bet}</p>
 
                       <div className="flex gap-2 mt-2">
@@ -247,7 +279,7 @@ export default function Page() {
                 </div>
               </div>
 
-              {/* 🎯 Current Turn & Actions */}
+              {/* ------------------- ACTION BUTTONS ------------------- */}
               {gameState.current_player && !gameState.game_over && (
                 <div className="flex flex-col items-center gap-3 mt-6">
                   <p className="text-yellow-300 text-lg animate-pulse">
@@ -272,6 +304,7 @@ export default function Page() {
                         Check
                       </motion.button>
                     )}
+
                     {gameState.legal_actions.includes("call") && (
                       <motion.button
                         whileHover={{ scale: 1.05 }}
@@ -283,6 +316,7 @@ export default function Page() {
                         Call
                       </motion.button>
                     )}
+
                     {gameState.legal_actions.includes("fold") && (
                       <motion.button
                         whileHover={{ scale: 1.05 }}
@@ -294,15 +328,14 @@ export default function Page() {
                         Fold
                       </motion.button>
                     )}
+
                     {gameState.legal_actions.includes("raise") && (
                       <div className="flex items-center gap-2">
                         <input
                           type="number"
                           className="w-20 p-1 text-black rounded"
                           value={raiseAmount}
-                          onChange={(e) =>
-                            setRaiseAmount(Number(e.target.value))
-                          }
+                          onChange={(e) => setRaiseAmount(Number(e.target.value))}
                         />
                         <motion.button
                           whileHover={{ scale: 1.05 }}
@@ -319,12 +352,13 @@ export default function Page() {
                 </div>
               )}
 
-              {/* 🧾 Action Log */}
+              {/* ------------------- ACTION LOG ------------------- */}
               {actionLog.length > 0 && (
                 <div className="bg-gray-700 mt-6 p-3 rounded-lg max-h-40 overflow-y-auto">
                   <h3 className="font-semibold mb-2 text-white text-center">
                     🧾 Action Log
                   </h3>
+
                   {actionLog.map((a, i) => (
                     <p
                       key={i}
