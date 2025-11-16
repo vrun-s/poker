@@ -127,7 +127,7 @@ function PlayerSeat({
         <div className="relative">
           <motion.div
             className={`
-              bg-gradient-to-br from-gray-800 to-gray-900 
+              bg-linear-to-br from-gray-800 to-gray-900 
               rounded-2xl p-4 shadow-2xl border-4
               ${isCurrentPlayer ? "border-yellow-400" : "border-gray-600"}
               ${player.folded ? "opacity-50" : ""}
@@ -220,7 +220,7 @@ function PlayerSeat({
 export default function PokerTable() {
   const [gameId, setGameId] = useState<string | null>(null);
   const [gameState, setGameState] = useState<GameState | null>(null);
-  const [playerNames, setPlayerNames] = useState("Alice");
+  const [gameIdInput, setGameIdInput] = useState("");
   const [raiseAmount, setRaiseAmount] = useState(20);
   const [loading, setLoading] = useState(false);
   const [actionLog, setActionLog] = useState<string[]>([]);
@@ -247,7 +247,7 @@ export default function PokerTable() {
   useEffect(() => {
     if (!gameId) return;
 
-    const viewerName = playerNames.split(",")[0];
+    const viewerName = currentPlayerName && currentPlayerName.trim() !== "" ? currentPlayerName : "spectator";
     setCurrentPlayerName(viewerName);
     const ws = new WebSocket(`ws://localhost:8000/ws/${gameId}/${viewerName}`);
 
@@ -276,7 +276,8 @@ export default function PokerTable() {
     ws.onclose = () => console.log("❌ WebSocket Disconnected");
 
     return () => ws.close();
-  }, [gameId, playerNames]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameId]);
 
   async function joinSeat(seatIndex: number) {
     if (!gameId) {
@@ -365,7 +366,7 @@ export default function PokerTable() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
-          player_names: playerNames.split(",").filter(n => n.trim()),
+          player_names: [],
           seat_count: 6 
         }),
       });
@@ -505,22 +506,39 @@ export default function PokerTable() {
 
       {!gameId ? (
         // Setup screen
-        <div className="bg-gray-800 rounded-2xl p-8 shadow-2xl">
-          <input
-            className="p-3 text-black rounded-lg w-full mb-4"
-            value={playerNames}
-            onChange={(e) => setPlayerNames(e.target.value)}
-            placeholder="Your name"
-          />
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={createGame}
-            className="bg-blue-600 hover:bg-blue-700 px-6 py-3 rounded-lg w-full text-white font-bold disabled:opacity-50 disabled:cursor-not-allowed"
-            disabled={loading}
-          >
-            {loading ? "Creating..." : "Create Game"}
-          </motion.button>
+        <div className="bg-gray-800 rounded-2xl p-8 shadow-2xl max-w-md mx-auto space-y-6">
+          {/* CREATE GAME */}
+          <div>
+            <h2 className="text-white text-xl font-bold mb-2">Create New Game</h2>
+            <button
+              onClick={createGame}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-bold"
+            >
+              Create Game
+            </button>
+          </div>
+            
+          <div className="border-t border-gray-700 pt-6" />
+            
+          {/* JOIN EXISTING GAME */}
+          <div>
+            <h2 className="text-white text-xl font-bold mb-2">Join Existing Game</h2>
+            <input
+              placeholder="Enter Game ID"
+              value={gameIdInput}
+              onChange={(e) => setGameIdInput(e.target.value)}
+              className="w-full px-4 py-2 rounded-lg mb-3 text-black"
+            />
+            <button
+              onClick={() => {
+                if (gameIdInput.trim() !== "") setGameId(gameIdInput.trim());
+              }}
+              className="w-full bg-green-600 hover:bg-green-700 text-white py-3 rounded-lg font-bold"
+            >
+              Join Game
+            </button>
+          </div>
+            
         </div>
       ) : (
         <div className="w-full max-w-7xl">
@@ -547,7 +565,7 @@ export default function PokerTable() {
           )}
 
           {/* Table */}
-          <div className="relative bg-gradient-to-br from-green-700 to-green-800 rounded-[50%] shadow-2xl border-8 border-amber-900"
+          <div className="relative bg-linear-to-br from-green-700 to-green-800 rounded-[50%] shadow-2xl border-8 border-amber-900"
             style={{ width: "900px", height: "600px", margin: "0 auto" }}>
             
             {/* Inner felt */}

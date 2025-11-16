@@ -2,3 +2,7 @@ AI Models used:
     1. Simple AI - 
     2. Heuristic AI - Decides based on logics
     3. Monte Carlo AI (Rollout) - Runs 200-400 simualtions and decides based on that
+
+TODO:
+1. Debug Lobby phase no legal actions error
+2. function to add more AI and verify if they work as intended

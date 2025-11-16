@@ -5,6 +5,7 @@ class Player:
         self.hand = []
         self.folded = False
         self.current_bet = 0
+        self.is_bot = False
 
     def bet(self, amount):
         

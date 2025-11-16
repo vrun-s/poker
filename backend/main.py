@@ -76,10 +76,8 @@ async def lobby_countdown(game_id: str):
             game.game_starting = remaining <= 5 and remaining > 0
             
             # Broadcast timer update
-            await manager.broadcast(game_id, {
-                "type": "state_update",
-                "state": game.get_game_state()
-            })
+            await manager.broadcast(game_id, game)
+
             
             if remaining == 0:
                 break
@@ -115,18 +113,14 @@ async def check_and_start_game(game_id: str):
             # Start the first hand
             game.play_hand()
             
-            await manager.broadcast(game_id, {
-                "type": "state_update", 
-                "state": game.get_game_state()
-            })
+            await manager.broadcast(game_id, game)
+
         else:
             # Not enough players - reset timer
             print(f"Not enough players for game {game_id} ({active_players}/{MIN_PLAYERS})")
             game.lobby_timer = LOBBY_DURATION
-            await manager.broadcast(game_id, {
-                "type": "state_update",
-                "state": game.get_game_state()
-            })
+            await manager.broadcast(game_id, game)
+
             # Restart timer
             await start_lobby_timer(game_id)
 
@@ -138,8 +132,6 @@ def get_active_player_count(game: PokerGame) -> int:
 @app.post("/create_game")
 async def create_game(req: CreateGameRequest):
     """Create a new poker game session with optional seat_count."""
-    if len(req.player_names) < 1:
-        raise HTTPException(status_code=400, detail="Need at least one human player")
 
     game_id = str(uuid4())[:8]
     seat_count = req.seat_count or 6
@@ -205,10 +197,8 @@ async def add_ai_player(game_id: str, payload: dict = Body(...)):
         # Restart lobby timer
         await start_lobby_timer(game_id)
 
-        await manager.broadcast(game_id, {
-            "type": "state_update",
-            "state": game.get_game_state()
-        })
+        await manager.broadcast(game_id, game)
+
 
     return {"success": True, "state": game.get_game_state()}
 
@@ -238,10 +228,7 @@ async def start_hand(game_id: str):
             game.game_starting = False
         
         game.play_hand()
-        await manager.broadcast(game_id, {
-            "type": "state_update",
-            "state": game.get_game_state()
-        })
+        await manager.broadcast(game_id, game)
 
         return {"message": "New hand started", "state": game.get_game_state()}
 
@@ -286,10 +273,8 @@ async def join_seat(game_id: str, payload: JoinSeatRequest):
         await start_lobby_timer(game_id)
 
         # Broadcast updated state
-        await manager.broadcast(game_id, {
-            "type": "state_update",
-            "state": game.get_game_state()
-        })
+        await manager.broadcast(game_id, game)
+
 
     return {"success": True, "state": game.get_game_state()}
 
@@ -330,12 +315,11 @@ async def leave_seat(game_id: str, payload: LeaveSeatRequest):
         await start_lobby_timer(game_id)
 
         # Broadcast updated state
-        await manager.broadcast(game_id, {
-            "type": "state_update", 
-            "state": game.get_game_state()
-        })
+        await manager.broadcast(game_id, game)
+
 
     return {"success": True, "state": game.get_game_state()}
+
 
 @app.post("/action/{game_id}")
 async def player_action(game_id: str, data: dict = Body(...)):
@@ -353,27 +337,38 @@ async def player_action(game_id: str, data: dict = Body(...)):
         action = data["action"]
         raise_amount = data.get("raise_amount", 0)
 
+        # Log the incoming action
+        print(f"[ACTION] Player {player_index} ({game.players[player_index].name}) action: {action} {raise_amount}")
+
         # Apply human action
         result = game.execute_action(player_index, action, raise_amount)
+        print(f"[ACTION RESULT] {result}")
+        
         state = game.get_game_state()
 
-        await manager.broadcast(game_id, {
-            "type": "state_update",
-            "state": game.get_game_state()
-        })
+        await manager.broadcast(game_id, game)
+
 
         # Log messages from human player
         messages = [f"{game.players[player_index].name} chose {action} {raise_amount if raise_amount else ''}".strip()]
 
+        # AI turn loop
+        ai_iterations = 0
+        max_ai_iterations = 20  # Safety limit
+        
         while (
             not game.game_over
             and game.current_player_index is not None
             and getattr(game.players[game.current_player_index], "is_bot", False)
+            and ai_iterations < max_ai_iterations
         ):
+            ai_iterations += 1
             ai_player_obj = game.players[game.current_player_index]
             ai_name = ai_player_obj.name
 
-            think_time = random.uniform(3, 5)
+            print(f"[AI TURN] {ai_name} (iteration {ai_iterations})")
+
+            think_time = random.uniform(1, 2)  # Reduced for testing
             await asyncio.sleep(think_time)
 
             ai_state = game.get_game_state()
@@ -381,24 +376,35 @@ async def player_action(game_id: str, data: dict = Body(...)):
 
             # Create AI instance (MonteCarlo, Heuristic, etc.)
             ai_player = MonteCarloAI(name=ai_name, simulations=200)
-            ai_decision = await loop.run_in_executor(executor, ai_player.decide, ai_state)
+            
+            try:
+                ai_decision = await loop.run_in_executor(executor, ai_player.decide, ai_state)
+                print(f"[AI DECISION] {ai_name}: {ai_decision}")
+            except Exception as e:
+                print(f"[AI ERROR] {ai_name} failed to decide: {e}")
+                # Default to fold on error
+                ai_decision = {"move": "fold", "raise_amount": 0}
 
             move = ai_decision["move"]
             amt = ai_decision.get("raise_amount", 0)
 
             # Execute and log AI move
-            print(f"[AI] {ai_name} chooses {move} {amt if amt else ''} after {think_time:.1f}s")
-            messages.append(f"{ai_name} ({ai_player.__class__.__name__}) waited {think_time:.1f}s → {move} {amt if amt else ''}")
+            print(f"[AI ACTION] {ai_name} chooses {move} {amt if amt else ''} after {think_time:.1f}s")
+            messages.append(f"{ai_name} waited {think_time:.1f}s → {move} {amt if amt else ''}")
 
-            game.execute_action(game.current_player_index, move, amt)
+            result = game.execute_action(game.current_player_index, move, amt)
+            print(f"[AI ACTION RESULT] {result}")
+            
             state = game.get_game_state()
 
-            await manager.broadcast(game_id, {
-                "type": "state_update",
-                "state": state
-            })
+            await manager.broadcast(game_id, game)
+
+
+        if ai_iterations >= max_ai_iterations:
+            print(f"[WARNING] AI loop hit max iterations limit!")
 
         return {"result": result, "state": state, "messages": messages}
+    
 
 @app.get("/state/{game_id}")
 async def get_state(game_id: str):
@@ -411,25 +417,31 @@ async def get_state(game_id: str):
 
 @app.websocket("/ws/{game_id}/{player_name}")
 async def websocket_endpoint(websocket: WebSocket, game_id: str, player_name: str):
-    # Player joins the game room
     await manager.connect(game_id, websocket)
+    # store name on socket
+    websocket.player_name = player_name
+    print(f"[WS CONNECT] game={game_id} player={player_name}")
 
-    # Immediately send the current state
+    # send initial personalized state (if available)
     game = games.get(game_id)
     if game:
-        await manager.broadcast(game_id, {
-            "type": "state_update",
-            "state": game.get_game_state(viewer_name=player_name)
-        })
+        try:
+            await websocket.send_json({
+                "type": "state_update",
+                "state": game.get_game_state(viewer_name=player_name)
+            })
+            print(f"[WS INIT STATE SENT] to={player_name}")
+        except Exception as e:
+            print(f"[WS INIT ERROR] to={player_name}: {e}")
 
     try:
         while True:
-            # For now we don't expect messages from client
-            # But you can later handle: WS actions, chat messages, etc.
+            # keep the socket open; ignore incoming messages for now
             await websocket.receive_text()
-
     except WebSocketDisconnect:
         manager.disconnect(game_id, websocket)
+        print(f"[WS DISCONNECT] game={game_id} player={player_name}")
+
 
 # Cleanup when game ends
 @app.delete("/game/{game_id}")

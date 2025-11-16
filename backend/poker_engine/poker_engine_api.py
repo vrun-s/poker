@@ -310,7 +310,6 @@ class PokerGame:
         self.setup_betting_round()
 
     def award_pot_to_remaining_player(self):
-        """Award pot to the last remaining player when others fold"""
         for p in self.players:
             if not p.folded:
                 p.chips += self.pot
@@ -440,7 +439,7 @@ class PokerGame:
                 "current_bet": p.current_bet,
                 "folded": p.folded
             })
-
+        print(f"[GET_STATE] viewer_name={viewer_name}")
         return {
             "stage": self.stage,
             "pot": self.pot,
@@ -454,7 +453,6 @@ class PokerGame:
             "winner": self.winner.name if self.winner else None,
             "dealer": self.players[self.dealer_index].name,
             "players": players_state,
-            # Lobby state additions
             "lobby_timer": getattr(self, 'lobby_timer', None),
             "game_starting": getattr(self, 'game_starting', False)
         }
