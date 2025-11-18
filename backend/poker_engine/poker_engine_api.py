@@ -429,7 +429,6 @@ class PokerGame:
                 else:
                     hand = []  # folded players have no visible cards
             else:
-                # In lobby phase, don't show any cards
                 hand = []
 
             players_state.append({

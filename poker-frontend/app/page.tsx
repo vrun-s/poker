@@ -2,6 +2,8 @@
 
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { useReliableWebSocket, WSMessage } from "@/hooks/useWebSocket";
+
 
 // Types
 type Player = {
@@ -40,6 +42,8 @@ const SEAT_POSITIONS = [
 ];
 
 const LOBBY_TIMER_DURATION = 15; // 15 seconds lobby phase
+
+// Types used by the parser
 
 function useAnimatedNumber(value: number, duration = 0.4) {
   const [display, setDisplay] = useState(value);
@@ -243,80 +247,68 @@ export default function PokerTable() {
     }
   }, [gameState?.lobby_timer, isInLobby]);
 
-  // WebSocket connection
-  useEffect(() => {
-    if (!gameId) return;
+  useReliableWebSocket<GameState>(
+    gameId
+      ? `ws://localhost:8000/ws/${gameId}/${currentPlayerName || "spectator"}`
+      : "",
+    (msg) => {
+      const state = msg.state;
+      setGameState(state);
 
-    const viewerName = currentPlayerName && currentPlayerName.trim() !== "" ? currentPlayerName : "spectator";
-    setCurrentPlayerName(viewerName);
-    const ws = new WebSocket(`ws://localhost:8000/ws/${gameId}/${viewerName}`);
-
-    ws.onopen = () => {
-      console.log("🔗 WebSocket Connected");
-      setError(null);
-    };
-
-    ws.onmessage = (event) => {
-      const message = JSON.parse(event.data);
-      if (message.type === "state_update") {
-        setGameState(message.state);
-        
-        // Update lobby timer from backend
-        if (message.state.lobby_timer !== undefined) {
-          setLobbyTimer(message.state.lobby_timer);
-        }
+      if (typeof state.lobby_timer === "number") {
+        setLobbyTimer(state.lobby_timer);
       }
-    };
+    }
+  );
 
-    ws.onerror = (err) => {
-      console.error("❌ WebSocket Error:", err);
-      setError("WebSocket connection error. Make sure the backend is running.");
-    };
-
-    ws.onclose = () => console.log("❌ WebSocket Disconnected");
-
-    return () => ws.close();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gameId]);
 
   async function joinSeat(seatIndex: number) {
-    if (!gameId) {
-      setError("You must create or open a game first.");
-      return;
-    }
-
-    if (!isInLobby) {
-      setError("Cannot join seat while game is in progress. Wait for the next lobby phase.");
-      return;
-    }
-
-    const name = prompt("Enter your name to take this seat:", currentPlayerName || "Player");
-    if (!name || name.trim() === "") return;
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      const res = await fetch(`${apiBase}/join_seat/${gameId}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ player_name: name.trim(), seat_index: seatIndex }),
-      });
-
-      if (res.ok) {
-        setCurrentPlayerName(name.trim());
-        setActionLog((prev) => [...prev, `${name} joined seat ${seatIndex + 1}`]);
-      } else {
-        const errData = await res.json().catch(() => ({ detail: "Unknown error" }));
-        setError(errData.detail || "Could not take seat");
-      }
-    } catch (err) {
-      console.error("Error joining seat:", err);
-      setError("Failed to connect to server. Make sure the backend is running on localhost:8000");
-    } finally {
-      setLoading(false);
-    }
+  if (!gameId) {
+    setError("You must create or open a game first.");
+    return;
   }
+
+  if (!isInLobby) {
+    setError("Cannot join seat while game is in progress. Wait for the next lobby phase.");
+    return;
+  }
+
+  const name = prompt("Enter your name to take this seat:", currentPlayerName || "Player");
+  if (!name || name.trim() === "") return;
+
+  const trimmedName = name.trim();
+
+  setLoading(true);
+  setError(null);
+
+  try {
+    const res = await fetch(`${apiBase}/join_seat/${gameId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ player_name: trimmedName, seat_index: seatIndex }),
+    });
+
+    if (res.ok) {
+      // Update our local identity
+      setCurrentPlayerName(trimmedName);
+      
+      setActionLog((prev) => [...prev, `${trimmedName} joined seat ${seatIndex + 1}`]);
+    } else {
+      const errData: unknown = await res.json().catch(() => ({ detail: "Unknown error" }));
+      if (typeof errData === "object" && errData !== null && "detail" in errData) {
+        setError((errData as { detail: string }).detail);
+      } else {
+        setError("Could not take seat");
+      }
+    }
+  } catch (err) {
+    console.error("Error joining seat:", err);
+    setError("Failed to connect to server. Make sure backend is running.");
+  } finally {
+    setLoading(false);
+  }
+}
+
 
   async function leaveSeat(seatIndex: number) {
     if (!gameId || !gameState) return;
