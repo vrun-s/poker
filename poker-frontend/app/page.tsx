@@ -225,12 +225,15 @@ export default function PokerTable() {
   const [currentPlayerName, setCurrentPlayerName] = useState<string>("");
   const [lobbyTimer, setLobbyTimer] = useState<number>(LOBBY_TIMER_DURATION);
 
-  const apiBase = "http://localhost:8000";
+  const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  //const wsBase = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
 
   const animatedPot = useAnimatedNumber(gameState?.pot || 0);
 
   const isInLobby = gameState?.stage === "lobby" || !gameState?.stage;
   const activePlayers = gameState?.players.filter(p => p && p.name).length || 0;
+  
+  console.log("ENV API:", process.env.NEXT_PUBLIC_API_URL);
 
   useEffect(() => {
     if (isInLobby && gameState?.lobby_timer !== undefined) {
@@ -241,8 +244,9 @@ export default function PokerTable() {
   // Single WebSocket connection - no player name in URL
   // Use useMemo to stabilize the URL
   const wsUrl = useMemo(() => {
-    return gameId ? `ws://localhost:8000/ws/${gameId}` : "";
-  }, [gameId]);
+  const wsBase = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
+  return gameId ? `${wsBase}/ws/${gameId}` : "";
+}, [gameId]);
   
   const { isConnected, sendMessage } = useReliableWebSocket<GameState>(wsUrl, (msg) => {
     if (msg.type === "state_update") {
